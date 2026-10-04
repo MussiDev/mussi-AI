@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.db
+.ddw-state.json
+.ddw-paused/
+.ddw-sessions/
+.ddw-journal.jsonl
+.ddw/**/__pycache__/
