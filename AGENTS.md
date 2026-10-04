@@ -9,11 +9,11 @@ A local dashboard that shows Claude Code subagents as characters working in an a
 | Language | TypeScript, Node 22 |
 | Server | Express |
 | Live updates | Server-Sent Events (SSE) |
-| Storage | SQLite (`better-sqlite3`) |
+| Storage | SQLite, encrypted at rest (`better-sqlite3-multiple-ciphers`) |
 | Frontend | React + Vite, office rendered in 3D with Three.js via `@react-three/fiber` |
 | Tests | Vitest |
 | Package manager | pnpm |
-| Security-sensitive paths | The event ingestion endpoint (receives data from outside the app) |
+| Security-sensitive paths | The event ingestion endpoint (receives data from outside the app), the token file and the database key file |
 
 ## Commands
 
