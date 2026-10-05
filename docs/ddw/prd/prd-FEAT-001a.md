@@ -5,16 +5,18 @@
 | Ticket | FEAT-001a |
 | Tracker | none |
 | Date | 2026-10-04 |
-| PRD loops | 1 |
+| PRD loops | 2 |
 | Loops since last human decision | 0 |
 
 ## Context and Problem
 
 Claude Code sessions and their subagents run on the user's machine, and nothing records which agent is doing what, in which stage, for how long and with how many tokens. The 3D office (FEAT-001b), the global history (FEAT-001c) and specialist creation (FEAT-001d) all need that data first. This ticket delivers it as a local service with no 3D interface.
 
-Terms used in all FEAT-001 PRDs: **boss** is the main Claude Code session; **agent** is the boss or any subagent; **session** is one Claude Code run in one project; **task** is the work of one agent from its first event after being idle until it reaches Done; **stage** is one of Thinking, Reading, Editing, Running, Waiting, Done.
+Terms used in all FEAT-001 PRDs: **boss** is the main Claude Code session; **agent** is the boss or any subagent; **session** is one Claude Code run in one project; **task** is the work of one agent from its first event that starts work (a prompt, a tool call, a finished tool or a request for permission) after being idle until it reaches Done; **stage** is one of Thinking, Reading, Editing, Running, Waiting, Done.
 
 Decision recorded (user, 2026-10-04, during the PLAN review of the threat model): protect the service against other users of the same machine and encrypt personal data at rest, instead of accepting those two risks. This added FR-13 to FR-16, NFR-05 and AC-31 to AC-40.
+
+Decision recorded (user, 2026-10-05, during the CODE review of Block 3): events that do not start work must not open a task, so that an idle notification after an agent is Done cannot create a phantom task that inflates the next task's duration. This amended the definition of task and AC-19, and added AC-41.
 
 ## Goals
 
@@ -71,7 +73,7 @@ Decision recorded (user, 2026-10-04, during the PLAN review of the threat model)
 - AC-16 (FR-07): WHEN a tool finishes or an agent stops, THE server SHALL add the token usage recorded since the previous reading to the task's token total.
 - AC-17 (FR-07): THE server SHALL read only token usage figures from the session transcript.
 - AC-18 (FR-07): IF token usage cannot be read for an event, THEN THE server SHALL keep the previous token total and flag the task as tokens-incomplete.
-- AC-19 (FR-08): WHEN an agent sends its first event after being Done or after being unknown, THE server SHALL open a new task with that event's time as start time.
+- AC-19 (FR-08): WHEN an agent that is Done or unknown sends an event that starts work (a prompt, a tool call, a finished tool or a request for permission), THE server SHALL open a new task with that event's time as start time.
 - AC-20 (FR-08): WHEN an agent reaches Done, THE server SHALL record that time as the task's end time.
 - AC-21 (FR-09): WHEN the server restarts, THE server SHALL serve every event and task stored before the restart.
 - AC-22 (FR-09): IF the database cannot be opened or written, THEN THE server SHALL log the error and respond with status 503 to event requests.
@@ -93,6 +95,7 @@ Decision recorded (user, 2026-10-04, during the PLAN review of the threat model)
 - AC-38 (FR-16): WHEN the server creates the database, THE server SHALL encrypt it with the key from the key file, creating the key file with a new random key and with permissions that deny access to other operating system users if it does not exist.
 - AC-39 (FR-16): IF the key file is missing while an encrypted database exists, or the key is wrong, THEN THE server SHALL refuse to start with an error naming the key file and SHALL NOT create a new database.
 - AC-40 (FR-16): THE database file SHALL contain no readable user, project or path text when its bytes are searched as plain text.
+- AC-41 (FR-08): IF an agent that has no open task sends an event that does not start work (an idle or other non-permission notification, SessionStart, SubagentStart, Stop, SubagentStop or SessionEnd), THEN THE server SHALL NOT open a task for it.
 
 ## Out of Scope
 
