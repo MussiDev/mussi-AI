@@ -147,10 +147,12 @@ function opened(c: Ctx, agentKey = 'boss'): void {
 
 function toolDone(c: Ctx, taskId: number | null, agentKey = 'boss'): void {
   c.bus.emit('toolFinished', { session: 's1', agentKey, taskId } as never);
+  c.tracker.flush();
 }
 
 function stopped(c: Ctx, taskId: number | null, agentKey = 'boss'): void {
   c.bus.emit('agentStopped', { session: 's1', agentKey, taskId } as never);
+  c.tracker.flush();
 }
 
 function changes(c: Ctx): number {
@@ -463,6 +465,7 @@ describe('error handling', () => {
     c.db.upsertSession({ id: 's2', user: 'alice', project: 'proj', transcript: null, started_at: 1000, ended_at: null });
     const id = openTask(c);
     c.bus.emit('toolFinished', { session: 's2', agentKey: 'boss', taskId: id });
+    c.tracker.flush();
     expect(task(c, id).tokens_incomplete).toBe(1);
   });
 
@@ -470,6 +473,7 @@ describe('error handling', () => {
     const c = setup();
     const id = openTask(c, 'a1');
     c.bus.emit('toolFinished', { session: 'nope', agentKey: 'a1', taskId: id } as never);
+    c.tracker.flush();
     expect(task(c, id).tokens_incomplete).toBe(1);
   });
 
@@ -538,14 +542,14 @@ describe('error handling', () => {
     expect(totals(task(c, id))).toEqual([4, 4, 4, 4]);
   });
 
-  it('rethrows an unexpected storage error so the bus reports it', () => {
+  it('reports an unexpected storage error from the deferred read generically, without crashing or leaking', () => {
     const c = setup({
       wrapDb: (db) =>
         new Proxy(db, {
           get(t, p) {
             if (p === 'addTokens') {
               return () => {
-                throw new Error('boom');
+                throw new Error(SECRET);
               };
             }
             const v = Reflect.get(t, p) as unknown;
@@ -555,9 +559,11 @@ describe('error handling', () => {
     });
     const id = openTask(c);
     opened(c);
-    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }, SECRET));
     toolDone(c, id);
-    expect(c.listenerErrors).toHaveLength(1);
+    expect(c.logs).toEqual(['Token usage read failed']);
+    expect(c.listenerErrors).toEqual([]);
+    expect(c.logs.join('\n')).not.toContain(SECRET);
   });
 });
 
@@ -620,6 +626,7 @@ describe('subagent path hardening', () => {
     append(decoy, line('d1', { i: 9, o: 9, cc: 9, cr: 9 }, SECRET));
     const id = openTask(c, key);
     c.bus.emit('toolFinished', { session: 's1', agentKey: key, taskId: id });
+    c.tracker.flush();
     expect(totals(task(c, id))).toEqual([0, 0, 0, 0]);
     expect(task(c, id).tokens_incomplete).toBe(1);
     expect(c.logs.join('\n')).not.toContain(SECRET);
@@ -633,6 +640,7 @@ describe('subagent path hardening', () => {
     append(decoy, line('d1', { i: 9, o: 9, cc: 9, cr: 9 }));
     const id = openTask(c, 'a1', 1000, sessionId);
     c.bus.emit('toolFinished', { session: sessionId, agentKey: 'a1', taskId: id });
+    c.tracker.flush();
     expect(totals(task(c, id))).toEqual([0, 0, 0, 0]);
     expect(task(c, id).tokens_incomplete).toBe(1);
   });
@@ -690,6 +698,7 @@ describe('release on session end', () => {
     // s2 is still tracked: usage written to its file is counted.
     append(other, line('o1', { i: 3, o: 3, cc: 3, cr: 3 }));
     c.bus.emit('toolFinished', { session: 's2', agentKey: 'boss', taskId: t2 });
+    c.tracker.flush();
     expect(totals(task(c, t2))).toEqual([3, 3, 3, 3]);
     // The ended session id comes back (a resumed session): fresh state, no throw.
     c.db.closeTask(t1, 2000);
@@ -766,5 +775,147 @@ describe('edge paths', () => {
     toolDone(c, id, 'a1');
     expect(task(c, id).tokens_incomplete).toBe(1);
     expect(totals(task(c, id))).toEqual([5, 5, 5, 5]);
+  });
+});
+
+describe('deferred reads', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it('does not read on the event itself: the read happens after the current tick', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    expect(totals(task(c, id))).toEqual([0, 0, 0, 0]);
+    await tick();
+    expect(totals(task(c, id))).toEqual([1, 1, 1, 1]);
+  });
+
+  it('defers agentStopped the same way and still attributes the usage to the closed task', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 2, o: 2, cc: 2, cr: 2 }));
+    c.db.closeTask(id, 2000);
+    c.bus.emit('agentStopped', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    expect(totals(task(c, id))).toEqual([0, 0, 0, 0]);
+    await tick();
+    expect(totals(task(c, id))).toEqual([2, 2, 2, 2]);
+  });
+
+  it('emits its agentChanged only after the counters are stored', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    const atEmit: number[] = [];
+    c.bus.on('agentChanged', () => atEmit.push(task(c, id).tokens_input));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    await tick();
+    expect(atEmit).toEqual([1]);
+  });
+
+  it('keeps the discovery and the incomplete flag of agentChanged synchronous', () => {
+    const c = setup({ now: () => 5000 });
+    const id = openTask(c, 'boss', 1000);
+    opened(c);
+    expect(task(c, id).tokens_incomplete).toBe(1);
+  });
+
+  it('dispose cancels a pending read', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    c.tracker.dispose();
+    await tick();
+    await tick();
+    expect(totals(task(c, id))).toEqual([0, 0, 0, 0]);
+    expect(c.logs).toEqual([]);
+  });
+
+  it('does nothing, and does not throw, when a read fires after dispose and after the database closed', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    c.tracker.dispose();
+    c.db.close();
+    await tick();
+    await tick();
+    c.tracker.flush();
+    expect(c.logs).toEqual([]);
+  });
+
+  it('reports an error in the deferred read through the logger, generically, and keeps working', async () => {
+    let fail = true;
+    const c = setup({
+      wrapDb: (db) =>
+        new Proxy(db, {
+          get(t, p) {
+            if (p === 'addTokens') {
+              return (...a: Parameters<Db['addTokens']>) => {
+                if (fail) throw new Error(SECRET);
+                return t.addTokens(...a);
+              };
+            }
+            const v = Reflect.get(t, p) as unknown;
+            return typeof v === 'function' ? (v as (...x: unknown[]) => unknown).bind(t) : v;
+          },
+        }),
+    });
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }, SECRET));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    await tick();
+    expect(c.logs).toEqual(['Token usage read failed']);
+    expect(c.listenerErrors).toEqual([]);
+    fail = false;
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    await tick();
+    expect(totals(task(c, id))).toEqual([1, 1, 1, 1]);
+  });
+
+  it('flush runs the pending reads at once and only once', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    c.tracker.flush();
+    expect(totals(task(c, id))).toEqual([1, 1, 1, 1]);
+    c.seen.length = 0;
+    await tick();
+    expect(changes(c)).toBe(0);
+  });
+
+  it('settles the pending reads of a session before releasing it, leaving no state behind', async () => {
+    const c = setup();
+    const id = openTask(c);
+    opened(c);
+    append(c.transcript, line('m1', { i: 3, o: 3, cc: 3, cr: 3 }));
+    c.bus.emit('toolFinished', { session: 's1', agentKey: 'boss', taskId: id } as never);
+    c.bus.emit('sessionEnded', { session: 's1' });
+    expect(totals(task(c, id))).toEqual([3, 3, 3, 3]);
+    await tick();
+    expect(c.tracker.stats()).toEqual({ files: 0, flagged: 0, tasks: 0 });
+  });
+
+  it('leaves the pending reads of another session alone when one session ends', async () => {
+    const c = setup();
+    const other = path.join(c.proj, 's2.jsonl');
+    fs.writeFileSync(other, '');
+    c.db.upsertSession({ id: 's2', user: 'alice', project: 'proj', transcript: other, started_at: 1000, ended_at: null });
+    const t2 = openTask(c, 'boss', 1000, 's2');
+    c.bus.emit('agentChanged', { session: 's2', agentKey: 'boss' });
+    append(other, line('o1', { i: 1, o: 1, cc: 1, cr: 1 }));
+    c.bus.emit('toolFinished', { session: 's2', agentKey: 'boss', taskId: t2 } as never);
+    c.bus.emit('sessionEnded', { session: 's1' });
+    expect(totals(task(c, t2))).toEqual([0, 0, 0, 0]);
+    await tick();
+    expect(totals(task(c, t2))).toEqual([1, 1, 1, 1]);
   });
 });

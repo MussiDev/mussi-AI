@@ -937,6 +937,8 @@ describe('startup', () => {
       }) + '\n',
     );
     await post(h, ev({ ts: ts + 10, hook: 'PostToolUse', tool: 'Bash', transcript }));
+    // The tracker reads after the response, on the next turn of the event loop.
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     const [t] = rows(h, 'SELECT * FROM tasks');
     expect([t?.['tokens_input'], t?.['tokens_output'], t?.['tokens_cache_creation'], t?.['tokens_cache_read']]).toEqual([3, 4, 5, 6]);

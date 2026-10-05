@@ -23,6 +23,8 @@ export interface TokenTrackerOptions {
 
 export interface TokenTracker {
   dispose(): void;
+  /** Test support: runs right now the reads that are waiting for the next turn of the event loop. */
+  flush(): void;
   /** Read-only diagnostic for tests: how much state the tracker is holding. */
   stats(): { files: number; flagged: number; tasks: number };
 }
@@ -117,6 +119,40 @@ export function createTokenTracker(opts: TokenTrackerOptions): TokenTracker {
   const sessionFiles = new Map<string, Set<string>>();
   const sessionTasks = new Map<string, Set<number>>();
   const latestTask = new Map<string, Map<string, number>>();
+
+  // Reads triggered by toolFinished and agentStopped run on the next turn of the event loop, so the HTTP
+  // response of the event that caused them is already queued (NFR-01). The bus cannot isolate failures
+  // that happen later, so the deferred job reports them itself with a generic line.
+  const pending = new Map<NodeJS.Immediate, { session: string; job: () => void }>();
+  let disposed = false;
+
+  function guarded(job: () => void): void {
+    try {
+      job();
+    } catch {
+      log('Token usage read failed');
+    }
+  }
+
+  function schedule(session: string, job: () => void): void {
+    if (disposed) return;
+    const handle = setImmediate(() => {
+      pending.delete(handle);
+      if (!disposed) guarded(job);
+    });
+    pending.set(handle, { session, job });
+  }
+
+  /** Runs and forgets the pending jobs of the sessions accepted by `match`. */
+  function settle(match: (session: string) => boolean): void {
+    if (disposed) return;
+    for (const [handle, entry] of [...pending]) {
+      if (!match(entry.session)) continue;
+      clearImmediate(handle);
+      pending.delete(handle);
+      guarded(entry.job);
+    }
+  }
 
   function index<K, V>(map: Map<string, Map<K, V> | Set<V>>, session: string, make: () => Map<K, V> | Set<V>): Map<K, V> | Set<V> {
     let entry = map.get(session);
@@ -350,8 +386,14 @@ export function createTokenTracker(opts: TokenTrackerOptions): TokenTracker {
     // No emit here: the agentChanged being handled is still reaching the other listeners, which read the database after this one.
     discover(ref, open.id, open.started_at);
   };
-  const onToolFinished = (p: AgentRef & { taskId: number | null }): void => trigger(p, p.taskId);
-  const onAgentStopped = (p: AgentRef & { taskId: number | null }): void => trigger(p, p.taskId);
+  const defer = (p: AgentRef & { taskId: number | null }): void => {
+    if (p.taskId === null) return;
+    const ref: AgentRef = { session: p.session, agentKey: p.agentKey };
+    const taskId = p.taskId;
+    schedule(ref.session, () => trigger(ref, taskId));
+  };
+  const onToolFinished = defer;
+  const onAgentStopped = defer;
 
   /**
    * Final read for each agent's latest task of the session (so late usage is not lost), then release
@@ -359,6 +401,8 @@ export function createTokenTracker(opts: TokenTrackerOptions): TokenTracker {
    * is per file, so the latest task is the one the late lines belong to.
    */
   const onSessionEnded = (p: { session: string }): void => {
+    // Reads still waiting for this session run first, so they neither get lost nor rebuild released state.
+    settle((session) => session === p.session);
     const agents = latestTask.get(p.session);
     try {
       if (agents) {
@@ -387,11 +431,15 @@ export function createTokenTracker(opts: TokenTrackerOptions): TokenTracker {
 
   return {
     dispose(): void {
+      disposed = true;
+      for (const handle of pending.keys()) clearImmediate(handle);
+      pending.clear();
       bus.off('agentChanged', onAgentChanged);
       bus.off('sessionEnded', onSessionEnded);
       bus.off('toolFinished', onToolFinished);
       bus.off('agentStopped', onAgentStopped);
     },
+    flush: () => settle(() => true),
     stats: () => ({ files: files.size, flagged: flagged.size, tasks: knownTasks.size }),
   };
 }
