@@ -27,7 +27,7 @@ To be filled in once the project is scaffolded (install, dev, build, test).
 - The 3D office animation loop (`useFrame`) never drives React state. React renders the surrounding panels only.
 - All incoming events are validated against a schema before being stored.
 - `src/shared/*` and `src/server/state.ts` perform no I/O.
-- HTTP modules (`app.ts`, `auth.ts`, `stream.ts`) contain no SQL. Only `db.ts` talks to SQLite, only `secrets.ts` reads or writes the secret files, and only `tokens.ts` reads transcripts.
+- HTTP modules (`app.ts`, `auth.ts`, `stream.ts`) contain no SQL. Only `db.ts` talks to SQLite, only `secrets.ts` reads or writes the secret files, and only `tokens.ts` reads transcripts. The hook script (`hooks/agents-office-hook.mjs`) is a separate client process outside `src/server`: it reads only the token file, never the database key, and writes nothing.
 - SQL uses bound parameters only.
 - The auth token and the database key are never logged, placed in a URL or sent in a response.
 - Test files may open the database or read the secret files directly to verify behavior, but only inside temporary directories they create and remove, never the real data directory.
