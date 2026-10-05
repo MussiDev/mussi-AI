@@ -6,6 +6,7 @@ import { createApp } from './app.js';
 import { createBus, type Bus } from './bus.js';
 import { openDb, resolveDbPath, type Db } from './db.js';
 import { loadOrCreateToken, resolveDataDir } from './secrets.js';
+import { createStreamHub } from './stream.js';
 import { createTokenTracker } from './tokens.js';
 
 export const DEFAULT_PORT = 4317;
@@ -86,8 +87,11 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   const out = opts.out ?? ((msg: string) => console.log(msg));
   const bus = createBus({ onListenerError: (_err, name) => log(`Bus listener failed for ${name}`) });
   const tracker = createTokenTracker({ db, bus, log, ...(opts.projectsDir !== undefined ? { projectsDir: opts.projectsDir } : {}) });
+  // Registered after the tracker: bus listeners run in registration order, and the tracker must store
+  // the counters before the hub reads them.
+  const stream = createStreamHub({ db, bus, log });
   let port = opts.port;
-  const app = createApp({ token, db, bus, getPort: () => port, log });
+  const app = createApp({ token, db, bus, getPort: () => port, log, stream });
 
   const v4 = http.createServer(app);
   try {
@@ -113,6 +117,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     close: async () => {
       await Promise.all(listeners.map(shutdown));
       tracker.dispose();
+      stream.dispose();
       db.close();
     },
   };

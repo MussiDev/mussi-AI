@@ -85,6 +85,8 @@ export interface Db {
   getAgent(session: string, agentKey: string): AgentRow | undefined;
   upsertAgent(a: AgentRow): void;
   getOpenTask(session: string, agentKey: string): TaskRow | undefined;
+  /** The agent's task with the highest id, open or closed. */
+  getLatestTask(session: string, agentKey: string): TaskRow | undefined;
   openTask(session: string, agentKey: string, startedAt: number): number;
   closeTask(id: number, endedAt: number): void;
   insertEvent(e: StoredEvent): number;
@@ -132,6 +134,7 @@ function prepareStatements(db: Database.Database) {
     getOpenTask: db.prepare(
       'SELECT * FROM tasks WHERE session = ? AND agent_key = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1',
     ),
+    getLatestTask: db.prepare('SELECT * FROM tasks WHERE session = ? AND agent_key = ? ORDER BY id DESC LIMIT 1'),
     openTask: db.prepare('INSERT INTO tasks (session, agent_key, started_at) VALUES (?, ?, ?)'),
     closeTask: db.prepare('UPDATE tasks SET ended_at = ? WHERE id = ?'),
     insertEvent: db.prepare(
@@ -304,6 +307,10 @@ class SqliteDb implements Db {
 
   getOpenTask(session: string, agentKey: string): TaskRow | undefined {
     return this.run((c) => c.stmts.getOpenTask.get(session, agentKey) as TaskRow | undefined);
+  }
+
+  getLatestTask(session: string, agentKey: string): TaskRow | undefined {
+    return this.run((c) => c.stmts.getLatestTask.get(session, agentKey) as TaskRow | undefined);
   }
 
   openTask(session: string, agentKey: string, startedAt: number): number {

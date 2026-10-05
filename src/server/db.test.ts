@@ -256,6 +256,22 @@ describe('persistence', () => {
     expect(db.getOpenTask('s1', 'boss')?.tokens_incomplete).toBe(1);
   });
 
+  it('getLatestTask returns the highest-id task of the agent, open or closed, and nothing for others', () => {
+    const db = open();
+    seed(db);
+    expect(db.getLatestTask('s1', 'boss')).toBeUndefined();
+    const first = db.openTask('s1', 'boss', 1100);
+    db.addTokens(first, { input: 1, output: 2, cacheCreation: 3, cacheRead: 4 });
+    db.closeTask(first, 1200);
+    // The closed task is still the latest one, with its final counters.
+    expect(db.getOpenTask('s1', 'boss')).toBeUndefined();
+    expect(db.getLatestTask('s1', 'boss')).toMatchObject({ id: first, ended_at: 1200, tokens_input: 1, tokens_cache_read: 4 });
+    const second = db.openTask('s1', 'boss', 1300);
+    expect(db.getLatestTask('s1', 'boss')).toMatchObject({ id: second, started_at: 1300, ended_at: null });
+    expect(db.getLatestTask('s1', 'other')).toBeUndefined();
+    expect(db.getLatestTask("s1' OR '1'='1", 'boss')).toBeUndefined();
+  });
+
   it('stores 500 events inserted in a loop inside transactions (NFR-03)', () => {
     const db = open();
     seed(db);

@@ -3,6 +3,7 @@ import type { Bus } from './bus.js';
 import { createAuth } from './auth.js';
 import { DbUnavailableError, type Db } from './db.js';
 import { ingestEvent } from './ingest.js';
+import type { StreamHub } from './stream.js';
 
 export interface AppOptions {
   token: string;
@@ -11,6 +12,8 @@ export interface AppOptions {
   /** Port the server is listening on; read per request so tests can use ephemeral ports. */
   getPort: () => number;
   log?: (msg: string) => void;
+  /** Live stream hub. When absent, GET /stream is not mounted and answers the fixed 404. */
+  stream?: StreamHub;
 }
 
 const BODY_LIMIT = '64kb';
@@ -107,20 +110,24 @@ export function createApp(opts: AppOptions): Express {
     ingest,
   );
 
-  // 4. Unknown routes: a fixed body, never the requested path.
-  // Block 6 must mount GET /stream BEFORE this catch-all.
+  // 4. GET /stream: the Host/Origin guard above and the auth middleware run first, so a refusal is a
+  // normal JSON answer before any SSE header is flushed. Mounted BEFORE the catch-all below.
+  if (opts.stream) app.get('/stream', auth.middleware, opts.stream.handler);
+
+  // 5. Unknown routes: a fixed body, never the requested path.
   app.use((_req, res) => {
     res.status(404).json({ error: 'not_found' });
   });
 
-  // 5. Errors: body-parser failures map to the spec's codes, anything else is a generic 500.
+  // 6. Errors: body-parser failures map to the spec's codes, anything else is a generic 500.
   // Neither the error text nor the request content is ever sent or logged.
-  const finalHandler: ErrorRequestHandler = (err: unknown, _req, res, next) => {
+  const finalHandler: ErrorRequestHandler = (err: unknown, _req, res, _next) => {
     if (res.headersSent) {
-      // Express's default handler would print a stack with console.error. This is unreachable for the
-      // current non-streaming routes; Block 6 (SSE) must handle post-header errors itself:
-      // log a fixed line and destroy the response.
-      next(err);
+      // A stream that fails after its headers went out can no longer send a status. Express's default
+      // handler would print a stack with console.error, so log a fixed line and destroy the response.
+      // The error itself is never logged.
+      log?.('Response failed after headers were sent');
+      res.destroy();
       return;
     }
     const type = (err as { type?: unknown } | null)?.type;
