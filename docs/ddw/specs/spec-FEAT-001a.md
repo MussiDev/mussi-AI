@@ -6,7 +6,7 @@
 | PRD | docs/ddw/prd/prd-FEAT-001a.md |
 | Tier | FEATURE |
 | Date | 2026-10-04 |
-| Spec loops | 2 |
+| Spec loops | 3 |
 | Loops since last human decision | 0 |
 
 ## Summary
@@ -14,6 +14,8 @@
 A Node 22 and TypeScript service receives events from a Claude Code hook script over local HTTP, validates them with a single shared definition (zod), stores them in an encrypted SQLite database, derives each agent's stage and task with a pure function, reads token usage incrementally from the session transcripts, and pushes every change to browsers through Server-Sent Events. The hook script runs as an async command hook and filters at the source, so no prompt text, code or file contents leave Claude Code. The server listens only on loopback, rejects requests from other origins and requires a secret auth token that lives in a file only the local user can read; browsers obtain access once through a pairing route that sets an HttpOnly cookie. The database key lives in a second file with the same protection. Terms follow the PRD: boss, agent, session, task, stage. "Auth token" means the secret that protects the server; "token usage" means the model tokens an agent consumes.
 
 Decision recorded (user, 2026-10-04): protect the service against other users of the same machine and encrypt personal data at rest, instead of accepting those two risks. This added Block 8 and Block 9 and changed Blocks 1, 2, 4, 6 and 7.
+
+Decision recorded (user, 2026-10-05, during the CODE review of Block 3): events that do not start work must not open a task, so an idle notification after an agent is Done cannot create a phantom task. This changed the task rule, the error handling and the tests of Block 3, and follows the amended AC-19 and the new AC-41 of the PRD.
 
 ## Coverage: PRD → blocks
 
@@ -136,14 +138,14 @@ Statements use bound parameters only, never string concatenation. Values come fr
 - `src/server/state.test.ts` (new) — one test per rule.
 
 **Logic**
-The function has no I/O. Rules: Read, Grep and Glob before a tool call set Reading; Edit, Write and NotebookEdit set Editing; Bash and every other tool set Running; a finished tool (PostToolUse or PostToolUseFailure) and UserPromptSubmit set Thinking; PermissionRequest and a Notification of type `permission_prompt` set Waiting; Stop (boss) and SubagentStop (agent) set Done; SessionEnd sets Done for every agent of the session through the caller. SessionStart and SubagentStart change no stage. The first event of an agent with no open task, other than Stop, SubagentStop, SessionEnd and SessionStart, registers the agent if unknown and opens a task with that event's `ts` as start. Done closes the task with that `ts` as end; the next event after Done opens a new task. An event whose `ts` is older than the agent's `last_ts` leaves the stage unchanged and is flagged stale, because async hooks can arrive out of order.
+The function has no I/O. Rules: Read, Grep and Glob before a tool call set Reading; Edit, Write and NotebookEdit set Editing; Bash and every other tool set Running; a finished tool (PostToolUse or PostToolUseFailure) and UserPromptSubmit set Thinking; PermissionRequest and a Notification of type `permission_prompt` set Waiting; Stop (boss) and SubagentStop (agent) set Done; SessionEnd sets Done for every agent of the session through the caller. SessionStart and SubagentStart change no stage. Any event can register an agent that is unknown. A task opens only on an event that starts work (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest and a Notification of type `permission_prompt`): the first such event of an agent with no open task opens a task with that event's `ts` as start. An event that does not start work (SessionStart, SubagentStart, a Notification of another type, Stop, SubagentStop, SessionEnd) never opens a task, even for an agent that is Done or unknown. Done closes the task with that `ts` as end; the next event that starts work after Done opens a new task. An event whose `ts` is older than the agent's `last_ts` leaves the stage unchanged and is flagged stale, because async hooks can arrive out of order.
 
 **Input validation**
 Events reach the function already validated by Block 1. The function treats `ts` as a non-negative integer and ignores any hook name outside the supported list.
 
 **Error handling**
 - An out-of-order event (older `ts`): stage unchanged, the event is still stored and flagged stale.
-- An event whose hook carries no stage meaning (SessionStart, SubagentStart): no stage change.
+- An event that does not start work (SessionStart, SubagentStart, a Notification that is not a permission prompt): no stage change and no task opened, even for an agent that is Done or unknown.
 - A Done event for an agent with no open task: no task is created.
 
 **Required tests**
@@ -154,7 +156,8 @@ Events reach the function already validated by Block 1. The function treats `ts`
 - [ ] the first event of an unknown agent registers it and applies the event — validates AC-13
 - [ ] a PermissionRequest or a permission_prompt notification sets Waiting — validates AC-14
 - [ ] Stop and SubagentStop set Done — validates AC-15
-- [ ] the first event after Done or from an unknown agent opens a task with that event's time as start — validates AC-19
+- [ ] the first event that starts work after Done or from an unknown agent opens a task with that event's time as start — validates AC-19
+- [ ] an idle notification, SessionStart, SubagentStart, Stop, SubagentStop or SessionEnd never opens a task, for an agent that is Done and for an unknown agent: an event that does not start work is invalid as a task starter — validates AC-41
 - [ ] reaching Done records the event's time as the task's end time — validates AC-20
 - [ ] an out-of-order event is invalid for the stage: stage unchanged and flagged stale
 - [ ] SessionStart and SubagentStart cause no stage change (missing stage meaning)
