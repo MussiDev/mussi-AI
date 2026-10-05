@@ -6,3 +6,4 @@ dist/
 .ddw-sessions/
 .ddw-journal.jsonl
 .ddw/**/__pycache__/
+coverage/
