@@ -30,11 +30,12 @@ To be filled in once the project is scaffolded (install, dev, build, test).
 - HTTP modules (`app.ts`, `auth.ts`, `stream.ts`) contain no SQL. Only `db.ts` talks to SQLite, only `secrets.ts` reads or writes the secret files, and only `tokens.ts` reads transcripts.
 - SQL uses bound parameters only.
 - The auth token and the database key are never logged, placed in a URL or sent in a response.
+- Test files may open the database or read the secret files directly to verify behavior, but only inside temporary directories they create and remove, never the real data directory.
 
 ## Code conventions
 
 - TypeScript in strict mode with ES modules. No `any` without a comment explaining why.
-- No `console.log` in server code except startup and shutdown messages in `main.ts`.
+- No `console.log` in server code except startup and shutdown messages in `main.ts`. Runtime diagnostics go through the injected logger, which `main.ts` wires to `console.error`, and they never contain a URL, header, body, secret or event content.
 
 ## What NOT to do in this project
 
