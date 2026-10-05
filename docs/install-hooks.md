@@ -106,6 +106,8 @@ Never put the token in a URL or query string: the server ignores it there, and U
 
 The hook always targets `127.0.0.1`; the host cannot be changed through the environment. If you change the port or data directory, set the same variables in the environment where Claude Code runs.
 
+Proxies: if you opt in to Node's environment proxy support (`NODE_USE_ENV_PROXY=1` together with `HTTP_PROXY`), include `127.0.0.1` in `NO_PROXY`; otherwise the hook's request, which carries the auth token, would be sent through the proxy.
+
 ## Troubleshooting
 
 - The server answers 401: the token file the hook reads is not the server's token. Check `AGENTS_OFFICE_HOME` is the same for both.

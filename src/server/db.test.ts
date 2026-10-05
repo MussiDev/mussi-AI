@@ -404,6 +404,10 @@ describe('availability', () => {
     expect(() => db.listSessions()).toThrow(DbUnavailableError);
     expect(logs).toHaveLength(1);
     expect(logs[0]).not.toContain(keyHex());
+    // The diagnostic is a fixed line plus the error name: raw error text can carry paths (and so
+    // the operating system user name), which AGENTS.md keeps out of runtime diagnostics.
+    expect(logs[0]).not.toContain(dir);
+    expect(logs[0]).toMatch(/^Database unavailable: [A-Za-z]+$/);
   });
 
   it('tries to reopen on the next call and recovers when the path becomes usable', () => {

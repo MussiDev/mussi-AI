@@ -7,3 +7,4 @@ dist/
 .ddw-journal.jsonl
 .ddw/**/__pycache__/
 coverage/
+.env*

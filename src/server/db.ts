@@ -168,10 +168,6 @@ function sqliteCode(e: unknown): string | undefined {
   return e instanceof Database.SqliteError ? (e as Error & { code: string }).code : undefined;
 }
 
-function describe(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 class SqliteDb implements Db {
   private conn: Connection | null = null;
   private logged = false;
@@ -245,7 +241,8 @@ class SqliteDb implements Db {
     }
     if (!this.logged) {
       this.logged = true;
-      this.opts.log?.(`Database unavailable: ${describe(e)}`);
+      // Only the error name: the message can carry file paths (and so the operating system user name).
+      this.opts.log?.(`Database unavailable: ${e instanceof Error ? e.name : 'Error'}`);
     }
   }
 
