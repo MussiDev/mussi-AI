@@ -11,10 +11,10 @@ export interface AgentRef {
 export interface BusEvents {
   /** An agent's state was updated by a non-stale event. */
   agentChanged: [AgentRef];
-  /** PostToolUse or PostToolUseFailure. */
-  toolFinished: [AgentRef];
-  /** Stop or SubagentStop. */
-  agentStopped: [AgentRef];
+  /** PostToolUse or PostToolUseFailure. taskId is the agent's open task, or null. */
+  toolFinished: [AgentRef & { taskId: number | null }];
+  /** Stop or SubagentStop. taskId is the task this event closed (already committed); for a stale event it is the still-open task instead; null when the agent had none. */
+  agentStopped: [AgentRef & { taskId: number | null }];
   /** SessionEnd. */
   sessionEnded: [{ session: string }];
 }

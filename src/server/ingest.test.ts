@@ -716,6 +716,8 @@ describe('bus', () => {
     const seen = record(h.bus);
     const boss = { session: 's1', agentKey: 'boss' };
     const sub = { session: 's1', agentKey: 'a1' };
+    const bossTask = { ...boss, taskId: 1 };
+    const subTask = { ...sub, taskId: null };
 
     await post(h, ev({ ts: 1000, hook: 'UserPromptSubmit' }));
     expect(seen).toEqual([['agentChanged', boss]]);
@@ -724,28 +726,28 @@ describe('bus', () => {
     await post(h, ev({ ts: 1100, hook: 'PostToolUse', tool: 'Bash' }));
     expect(seen).toEqual([
       ['agentChanged', boss],
-      ['toolFinished', boss],
+      ['toolFinished', bossTask],
     ]);
 
     seen.length = 0;
     await post(h, ev({ ts: 1200, hook: 'PostToolUseFailure', tool: 'Bash' }));
     expect(seen).toEqual([
       ['agentChanged', boss],
-      ['toolFinished', boss],
+      ['toolFinished', bossTask],
     ]);
 
     seen.length = 0;
     await post(h, ev({ ts: 1300, hook: 'Stop' }));
     expect(seen).toEqual([
       ['agentChanged', boss],
-      ['agentStopped', boss],
+      ['agentStopped', bossTask],
     ]);
 
     seen.length = 0;
     await post(h, ev({ ts: 1400, hook: 'SubagentStop', agent_id: 'a1', agent: 'explorer' }));
     expect(seen).toEqual([
       ['agentChanged', sub],
-      ['agentStopped', sub],
+      ['agentStopped', subTask],
     ]);
 
     seen.length = 0;
@@ -754,6 +756,25 @@ describe('bus', () => {
       ['agentChanged', boss],
       ['agentChanged', sub],
       ['sessionEnded', { session: 's1' }],
+    ]);
+  });
+
+  it('carries the task id: the open task for toolFinished and the task the event closed for agentStopped', async () => {
+    const h = await harness();
+    const finished: unknown[] = [];
+    const stopped: unknown[] = [];
+    h.bus.on('toolFinished', (p) => finished.push(p));
+    h.bus.on('agentStopped', (p) => stopped.push(p));
+    // A tool finishing for an agent that is Done opens the task itself.
+    await post(h, ev({ ts: 1000, hook: 'PostToolUse', tool: 'Bash' }));
+    await post(h, ev({ ts: 1100, hook: 'Stop' }));
+    await post(h, ev({ ts: 1200, hook: 'Stop' }));
+    const ids = rows(h, 'SELECT id FROM tasks').map((r) => r['id']);
+    expect(ids).toHaveLength(1);
+    expect(finished).toEqual([{ session: 's1', agentKey: 'boss', taskId: ids[0] }]);
+    expect(stopped).toEqual([
+      { session: 's1', agentKey: 'boss', taskId: ids[0] },
+      { session: 's1', agentKey: 'boss', taskId: null },
     ]);
   });
 
@@ -889,6 +910,37 @@ describe('startup', () => {
       body: JSON.stringify(ev()),
     });
     expect(res.status).toBe(202);
+  });
+
+  it('wires the token tracker: usage written while a task is open reaches its counters', async () => {
+    const logs: string[] = [];
+    const home = makeHome();
+    const { token, db, dataDir } = openFor(home, logs);
+    const projects = path.join(home, 'projects');
+    fs.mkdirSync(path.join(projects, 'proj'), { recursive: true });
+    const transcript = path.join(projects, 'proj', 's1.jsonl');
+    fs.writeFileSync(transcript, '');
+    const server = await startServer({ token, db, port: 0, log: (m) => logs.push(m), projectsDir: projects });
+    running.push(server);
+    const h = { port: server.port, token, dataDir } as Harness;
+    const ts = Date.now() + 1000;
+
+    await post(h, ev({ ts, hook: 'UserPromptSubmit', transcript }));
+    fs.appendFileSync(
+      transcript,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'm1',
+          usage: { input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 5, cache_read_input_tokens: 6 },
+        },
+      }) + '\n',
+    );
+    await post(h, ev({ ts: ts + 10, hook: 'PostToolUse', tool: 'Bash', transcript }));
+
+    const [t] = rows(h, 'SELECT * FROM tasks');
+    expect([t?.['tokens_input'], t?.['tokens_output'], t?.['tokens_cache_creation'], t?.['tokens_cache_read']]).toEqual([3, 4, 5, 6]);
+    expect(t?.['tokens_incomplete']).toBe(0);
   });
 
   it.skipIf(!ipv6Available)(ipv6Name('keeps 127.0.0.1 and reports it when ::1 cannot be used'), async () => {
@@ -1032,7 +1084,7 @@ describe('bus listener isolation', () => {
     bus.once('sessionEnded', (p) => seen.push(p.session));
     expect(bus.emit('sessionEnded', { session: 'a' })).toBe(true);
     expect(bus.emit('sessionEnded', { session: 'b' })).toBe(true);
-    expect(bus.emit('agentStopped', { session: 'b', agentKey: 'boss' })).toBe(false);
+    expect(bus.emit('agentStopped', { session: 'b', agentKey: 'boss', taskId: null })).toBe(false);
     expect(seen).toEqual(['a']);
   });
 });

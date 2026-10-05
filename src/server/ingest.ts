@@ -49,7 +49,7 @@ function applyToAgent(db: Db, event: OfficeEvent, agentKey: string): { applied: 
 }
 
 /** One transaction: session, agent state, task change and the event row. Returns who changed. */
-function store(db: Db, event: OfficeEvent): Applied[] {
+function store(db: Db, event: OfficeEvent): { applied: Applied[]; ownTaskId: number | null } {
   db.upsertSession({
     id: event.session,
     user: event.user,
@@ -90,10 +90,10 @@ function store(db: Db, event: OfficeEvent): Applied[] {
   });
 
   if (event.hook === 'SessionEnd') db.endSession(event.session, event.ts);
-  return applied;
+  return { applied, ownTaskId };
 }
 
-function announce(bus: Bus, event: OfficeEvent, applied: Applied[]): void {
+function announce(bus: Bus, event: OfficeEvent, applied: Applied[], taskId: number | null): void {
   const ownKey = event.agent_id ?? 'boss';
   const session = event.session;
   for (const a of applied) {
@@ -102,11 +102,11 @@ function announce(bus: Bus, event: OfficeEvent, applied: Applied[]): void {
   switch (event.hook) {
     case 'PostToolUse':
     case 'PostToolUseFailure':
-      bus.emit('toolFinished', { session, agentKey: ownKey });
+      bus.emit('toolFinished', { session, agentKey: ownKey, taskId });
       break;
     case 'Stop':
     case 'SubagentStop':
-      bus.emit('agentStopped', { session, agentKey: ownKey });
+      bus.emit('agentStopped', { session, agentKey: ownKey, taskId });
       break;
     case 'SessionEnd':
       bus.emit('sessionEnded', { session });
@@ -123,7 +123,7 @@ function announce(bus: Bus, event: OfficeEvent, applied: Applied[]): void {
 export function ingestEvent(db: Db, bus: Bus, input: unknown): IngestResult {
   const parsed = parseEvent(input);
   if (!parsed.ok) return { ok: false, field: parsed.field };
-  const applied = db.transaction(() => store(db, parsed.event));
-  announce(bus, parsed.event, applied);
+  const { applied, ownTaskId } = db.transaction(() => store(db, parsed.event));
+  announce(bus, parsed.event, applied, ownTaskId);
   return { ok: true };
 }

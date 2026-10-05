@@ -6,6 +6,7 @@ import { createApp } from './app.js';
 import { createBus, type Bus } from './bus.js';
 import { openDb, resolveDbPath, type Db } from './db.js';
 import { loadOrCreateToken, resolveDataDir } from './secrets.js';
+import { createTokenTracker } from './tokens.js';
 
 export const DEFAULT_PORT = 4317;
 
@@ -32,6 +33,8 @@ export interface StartOptions {
   log: (msg: string) => void;
   /** Startup messages such as the ::1 fallback. Defaults to console.log. */
   out?: (msg: string) => void;
+  /** Transcript root for token usage tracking. Defaults to ~/.claude/projects (tests inject a temp directory). */
+  projectsDir?: string;
 }
 
 export interface MainIo {
@@ -82,6 +85,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   // main.ts is the only module allowed to print.
   const out = opts.out ?? ((msg: string) => console.log(msg));
   const bus = createBus({ onListenerError: (_err, name) => log(`Bus listener failed for ${name}`) });
+  const tracker = createTokenTracker({ db, bus, log, ...(opts.projectsDir !== undefined ? { projectsDir: opts.projectsDir } : {}) });
   let port = opts.port;
   const app = createApp({ token, db, bus, getPort: () => port, log });
 
@@ -108,6 +112,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     bus,
     close: async () => {
       await Promise.all(listeners.map(shutdown));
+      tracker.dispose();
       db.close();
     },
   };
